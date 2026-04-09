@@ -10,6 +10,7 @@ import (
 	"github.com/dhenkes/luck-os-rng/internal/renderer"
 )
 
+
 type CoinFlipHandler struct{}
 
 func NewCoinFlipHandler() *CoinFlipHandler {
@@ -26,6 +27,11 @@ func (h *CoinFlipHandler) flip(w http.ResponseWriter, r *http.Request) {
 		Tails: r.URL.Query().Get("tails"),
 	}
 	cfg.ApplyDefaults()
+
+	if err := cfg.Validate(); err != nil {
+		writeError(w, err)
+		return
+	}
 
 	result := game.FlipCoin(cfg)
 	frames := renderer.CoinFlipFrames(result)

@@ -29,7 +29,7 @@ func (c DiceConfig) Validate() error {
 }
 
 type DiceResult struct {
-	Dice   []int `json:"dice"`
-	Sum    int   `json:"sum"`
+	Dice   []int      `json:"dice"`
+	Sum    int        `json:"sum"`
 	Config DiceConfig `json:"-"`
 }

@@ -62,9 +62,15 @@ func (c RouletteConfig) Validate() error {
 		if len(c.Values) < 2 {
 			v.Add("values", "must have at least 2 values")
 		}
+		if len(c.Values) > 100 {
+			v.Add("values", "must have 100 or fewer values")
+		}
 		for i, val := range c.Values {
 			if val == "" {
 				v.Add(fmt.Sprintf("values[%d]", i), "must not be empty")
+			}
+			if len(val) > maxLabelLen {
+				v.Add(fmt.Sprintf("values[%d]", i), "must be 50 characters or fewer")
 			}
 		}
 	}
@@ -93,11 +99,11 @@ func (c RouletteColor) String() string {
 }
 
 type RouletteResult struct {
-	Value  string        `json:"value"`
-	Number int           `json:"number"`
-	Color  RouletteColor `json:"color"`
-	IsZero bool          `json:"is_zero"`
-	Mode   RouletteMode  `json:"mode"`
+	Value  string         `json:"value"`
+	Number int            `json:"number"`
+	Color  RouletteColor  `json:"color"`
+	IsZero bool           `json:"is_zero"`
+	Mode   RouletteMode   `json:"mode"`
 	Config RouletteConfig `json:"-"`
 }
 

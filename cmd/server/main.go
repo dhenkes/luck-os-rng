@@ -19,7 +19,14 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
+	host := flag.String("host", "", "public host for generated URLs (default: localhost:<port>)")
 	flag.Parse()
+
+	if *host != "" {
+		handler.SetHost(*host)
+	} else {
+		handler.SetHost("localhost" + *addr)
+	}
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	slog.Info("luck starting")
@@ -29,11 +36,13 @@ func main() {
 	slotsHandler := handler.NewSlotsHandler()
 	coinflipHandler := handler.NewCoinFlipHandler()
 	diceHandler := handler.NewDiceHandler()
+	doubleHandler := handler.NewDoubleHandler()
 
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
 	r.Use(middleware.Logger)
+	r.Use(middleware.SecurityHeaders)
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Timeout(60 * time.Second))
 
@@ -51,13 +60,15 @@ func main() {
 	slotsHandler.Register(r)
 	coinflipHandler.Register(r)
 	diceHandler.Register(r)
+	doubleHandler.Register(r)
 
 	srv := &http.Server{
-		Addr:         *addr,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:           *addr,
+		Handler:        r,
+		ReadTimeout:    15 * time.Second,
+		WriteTimeout:   120 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
 
 	done := make(chan os.Signal, 1)

@@ -21,7 +21,7 @@ func SpinSlots(cfg model.SlotsConfig) model.SlotsResult {
 }
 
 func spinSlotsStandard(cfg model.SlotsConfig) model.SlotsResult {
-	weights := standardWeights()
+	weights := standardWeights(cfg.Bet)
 
 	var grid [][]string
 	switch cfg.Luck {
@@ -57,10 +57,37 @@ func spinSlotsStandard(cfg model.SlotsConfig) model.SlotsResult {
 	}
 }
 
-func standardWeights() []int {
+func standardWeights(bet model.BetTier) []int {
 	weights := make([]int, len(model.StandardSymbols))
 	for i, s := range model.StandardSymbols {
 		weights[i] = s.Weight
+	}
+	// Higher bets inflate common symbol weights, making wins rarer.
+	switch bet {
+	case model.BetMedium:
+		// Boost top 3 commons by 30%.
+		for i := 0; i < 3 && i < len(weights); i++ {
+			weights[i] = weights[i] * 13 / 10
+		}
+	case model.BetHigh:
+		// Boost top 3 commons by 70%, reduce rares.
+		for i := 0; i < 3 && i < len(weights); i++ {
+			weights[i] = weights[i] * 17 / 10
+		}
+		for i := 4; i < len(weights)-2; i++ {
+			weights[i] = weights[i] * 7 / 10
+		}
+	case model.BetMax:
+		// Double commons, halve rares.
+		for i := 0; i < 3 && i < len(weights); i++ {
+			weights[i] = weights[i] * 2
+		}
+		for i := 4; i < len(weights)-2; i++ {
+			weights[i] = weights[i] / 2
+			if weights[i] < 1 {
+				weights[i] = 1
+			}
+		}
 	}
 	return weights
 }
@@ -128,7 +155,7 @@ func generateInsaneGrid(rows, cols int) [][]string {
 	}
 
 	// Add one random symbol to prevent it from being too uniform.
-	weights := standardWeights()
+	weights := standardWeights(model.BetLow)
 	for range 2 {
 		r := RandomInt(0, rows-1)
 		c := RandomInt(0, cols-1)
@@ -329,7 +356,7 @@ func partitionSum(n, cols int) []int {
 
 	for i := range cols - 1 {
 		// Ensure each remaining part can be at least 0.
-		maxVal := remaining - (cols - 1 - i) * 0
+		maxVal := remaining - (cols-1-i)*0
 		if maxVal < 0 {
 			maxVal = 0
 		}

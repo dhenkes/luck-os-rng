@@ -89,6 +89,8 @@ type SlotsConfig struct {
 	Operation  SlotsOperation // for MinMax: add or multiply
 	ReelValues [][]string     // for Custom mode: values per column
 	Luck       SlotsLuck      // bias toward wins
+	Bet        BetTier        // risk/reward tier
+	Spins      int            // multi-spin count (1-10, default 1)
 }
 
 func DefaultSlotsConfig() SlotsConfig {
@@ -124,9 +126,15 @@ func (c SlotsConfig) Validate() error {
 			if len(col) < 2 {
 				v.Add(fmt.Sprintf("reel_values[%d]", i), "must have at least 2 values")
 			}
+			if len(col) > 100 {
+				v.Add(fmt.Sprintf("reel_values[%d]", i), "must have 100 or fewer values")
+			}
 			for j, val := range col {
 				if val == "" {
 					v.Add(fmt.Sprintf("reel_values[%d][%d]", i, j), "must not be empty")
+				}
+				if len(val) > maxLabelLen {
+					v.Add(fmt.Sprintf("reel_values[%d][%d]", i, j), "must be 50 characters or fewer")
 				}
 			}
 		}
@@ -150,24 +158,24 @@ type Payline struct {
 
 // CascadeStep records one round of a cascade animation.
 type CascadeStep struct {
-	Grid      [][]string          // grid when wins were found
-	Wins      []Payline           // paylines that won
-	Removed   map[Position]bool   // positions removed
-	GridAfter [][]string          // grid after drop + refill
+	Grid      [][]string        // grid when wins were found
+	Wins      []Payline         // paylines that won
+	Removed   map[Position]bool // positions removed
+	GridAfter [][]string        // grid after drop + refill
 }
 
 // SlotsResult is the outcome of a slots spin.
 type SlotsResult struct {
-	Grid         [][]string    `json:"grid"`
-	Paylines     []Payline     `json:"paylines,omitempty"`
-	Multiplier   int           `json:"multiplier"`
-	FreeSpins    int           `json:"free_spins"`
-	BonusRound   bool          `json:"bonus_round"`
-	FinalNumber  int           `json:"final_number,omitempty"`
-	CascadeSteps []CascadeStep `json:"-"`
-	Mode         SlotsMode     `json:"mode"`
+	Grid         [][]string     `json:"grid"`
+	Paylines     []Payline      `json:"paylines,omitempty"`
+	Multiplier   int            `json:"multiplier"`
+	FreeSpins    int            `json:"free_spins"`
+	BonusRound   bool           `json:"bonus_round"`
+	FinalNumber  int            `json:"final_number,omitempty"`
+	CascadeSteps []CascadeStep  `json:"-"`
+	Mode         SlotsMode      `json:"mode"`
 	Operation    SlotsOperation `json:"-"`
-	Config       SlotsConfig   `json:"-"`
+	Config       SlotsConfig    `json:"-"`
 }
 
 // Standard mode symbols, ordered by rarity (rarest last).

@@ -12,9 +12,11 @@ import (
 
 // Frame is a single snapshot of the terminal display at a point in time.
 type Frame struct {
-	Content string        // ANSI-encoded content for terminals.
-	Lines   []string      // Raw display lines (with ANSI color but no cursor movement).
+	Content string            // ANSI-encoded content for terminals.
+	Lines   []string          // Raw display lines (with ANSI color but no cursor movement).
 	Delay   time.Duration
+	Tag     string            // Optional tag for special handling (e.g., "engagement").
+	Meta    map[string]string // Optional metadata (e.g., URLs for browser buttons).
 }
 
 // ANSI escape codes.
@@ -94,19 +96,122 @@ func colorForRoulette(c model.RouletteColor) string {
 
 // RouletteFrames generates ANSI animation frames for a roulette spin.
 func RouletteFrames(result model.RouletteResult, cfg model.RouletteConfig) []Frame {
+	if cfg.Mode == model.RouletteStandard {
+		return rouletteWheelFrames(result)
+	}
+	return rouletteSimpleFrames(result, cfg)
+}
+
+// rouletteWheelFrames shows a spinning wheel strip for standard roulette.
+func rouletteWheelFrames(result model.RouletteResult) []Frame {
+	wheel := model.WheelOrder
+	totalFrames := 28
+	frames := make([]Frame, 0, totalFrames+1)
+	prevLines := 0
+
+	// Find final position in wheel.
+	finalPos := 0
+	for i, n := range wheel {
+		if n == result.Number {
+			finalPos = i
+			break
+		}
+	}
+
+	// Animate: ball moving around wheel, decelerating.
+	startPos := game.RandomInt(0, len(wheel)-1)
+
+	for i := range totalFrames {
+		progress := float64(i) / float64(totalFrames)
+		pos := startPos + int(float64(finalPos-startPos+len(wheel)*3)*progress)
+		pos = ((pos % len(wheel)) + len(wheel)) % len(wheel)
+
+		lines := buildWheelStrip(wheel, pos, false)
+		frames = append(frames, Frame{
+			Content: redraw(lines, prevLines),
+			Lines:   lines,
+			Delay:   frameDelay(i),
+		})
+		prevLines = lineCount(lines)
+	}
+
+	// Final frame with result highlighted.
+	lines := buildWheelStrip(wheel, finalPos, true)
+
+	frames = append(frames, Frame{
+		Content: redraw(lines, prevLines) + "\n",
+		Lines:   lines,
+		Delay:   0,
+	})
+
+	return frames
+}
+
+// buildWheelStrip shows a horizontal strip of wheel numbers with the center highlighted.
+func buildWheelStrip(wheel []int, centerPos int, highlight bool) []string {
+	n := len(wheel)
+
+	centerNum := wheel[centerPos]
+	leftNum := wheel[((centerPos-1)%n+n)%n]
+	rightNum := wheel[((centerPos+1)%n+n)%n]
+
+	centerColor := colorForRoulette(model.RouletteColors[centerNum])
+	leftColor := colorForRoulette(model.RouletteColors[leftNum])
+	rightColor := colorForRoulette(model.RouletteColors[rightNum])
+
+	// Each number is 2 digits. Center has brackets when highlighted.
+	left := fmt.Sprintf("%s%02d%s", leftColor, leftNum, Reset)
+	right := fmt.Sprintf("%s%02d%s", rightColor, rightNum, Reset)
+	var center string
+	if highlight {
+		center = fmt.Sprintf("%s%s[%02d]%s", Bold, centerColor, centerNum, Reset)
+	} else {
+		center = fmt.Sprintf("%s%s %02d %s", Bold, centerColor, centerNum, Reset)
+	}
+
+	// Build value line with display-width-aware centering.
+	// Inner content: "LL  CC  RR" (display width 12), padded to 15 for the box.
+	inner := left + "  " + center + "  " + right
+	padded := centerPad(inner, 15)
+	valLine := "|" + padded + "|"
+
+	// Position vv/^^ pointers at the center number.
+	// leftPad = leading spaces from centerPad, then skip left number + separator.
+	leftPad := (15 - displayWidth(inner)) / 2
+	pointerOffset := 1 + leftPad + 2 + 2 + 1 // "|" + pad + left(2) + sep(2) + center leading char
+	pointer := strings.Repeat(" ", pointerOffset) + "vv"
+
+	lines := []string{
+		"+---------------+",
+		"|     LUCK      |",
+		"+---------------+",
+		pointer,
+		valLine,
+		strings.Repeat(" ", pointerOffset) + "^^",
+		"+---------------+",
+	}
+
+	if highlight {
+		colorLabel := model.RouletteColors[centerNum].String()
+		labelPad := centerPad(colorLabel, 13)
+		lines = append(lines,
+			fmt.Sprintf("| %s%s%s |", centerColor, labelPad, Reset),
+			"+---------------+",
+		)
+	}
+
+	return lines
+}
+
+// rouletteSimpleFrames handles minmax and custom modes with the classic box.
+func rouletteSimpleFrames(result model.RouletteResult, cfg model.RouletteConfig) []Frame {
 	totalFrames := 28
 	frames := make([]Frame, 0, totalFrames+1)
 	prevLines := 0
 
 	for i := range totalFrames {
 		var val, color string
-
 		switch cfg.Mode {
-		case model.RouletteStandard:
-			n := game.RandomInt(0, 36)
-			c := model.RouletteColors[n]
-			color = colorForRoulette(c)
-			val = fmt.Sprintf("%2d", n)
 		case model.RouletteMinMax:
 			n := game.RandomInt(cfg.Min, cfg.Max)
 			val = fmt.Sprintf("%d", n)
@@ -125,19 +230,15 @@ func RouletteFrames(result model.RouletteResult, cfg model.RouletteConfig) []Fra
 		prevLines = lineCount(lines)
 	}
 
-	// Final frame with the real result.
-	var color, colorLabel string
+	var color string
 	switch cfg.Mode {
-	case model.RouletteStandard:
-		color = colorForRoulette(result.Color)
-		colorLabel = result.Color.String()
 	case model.RouletteMinMax:
 		color = Bold + Cyan
 	case model.RouletteCustomValues:
 		color = Bold + Yellow
 	}
 
-	lines := buildRouletteBox(cfg.Mode, result.Value, color, colorLabel, cfg)
+	lines := buildRouletteBox(cfg.Mode, result.Value, color, "", cfg)
 	frames = append(frames, Frame{
 		Content: redraw(lines, prevLines) + "\n",
 		Lines:   lines,
@@ -584,38 +685,77 @@ func buildSimpleGridLines(grid [][]string, cols, colWidth int) []string {
 
 // CoinFlipFrames generates ANSI animation frames for a coin flip.
 func CoinFlipFrames(result model.CoinFlipResult) []Frame {
-	sides := []string{"(O)", " | ", "(O)", " | "}
 	totalFrames := 20
 	var frames []Frame
 	prevLines := 0
 
-	for i := range totalFrames {
-		side := sides[i%len(sides)]
-		lines := []string{
-			"+---------------+",
-			fmt.Sprintf("|  %s  |", centerPad(side, 11)),
-			"+---------------+",
-		}
+	// Two coin faces for animation. All padded to 7 lines to prevent flicker.
+	face1 := []string{
+		"      .----.",
+		"     / o  o \\",
+		"    |  \\__/  |",
+		"     \\      /",
+		"      '----'",
+		"",
+		"",
+	}
+	face2 := []string{
+		"      .----.",
+		"     /  ||  \\",
+		"    |   ||   |",
+		"     \\  ||  /",
+		"      '----'",
+		"",
+		"",
+	}
+	edge := []string{
+		"",
+		"       ||||",
+		"       ||||",
+		"       ||||",
+		"",
+		"",
+		"",
+	}
+	coinFaces := [][]string{face1, edge, face2, edge}
 
+	for i := range totalFrames {
+		face := coinFaces[i%len(coinFaces)]
 		frames = append(frames, Frame{
-			Content: redraw(lines, prevLines),
-			Lines:   lines,
+			Content: redraw(face, prevLines),
+			Lines:   face,
 			Delay:   frameDelay(i),
 		})
-		prevLines = lineCount(lines)
+		prevLines = lineCount(face)
 	}
 
-	// Final frame.
-	inner := fmt.Sprintf("%s%s%s", Bold, result.Value, Reset)
-	lines := []string{
-		"+---------------+",
-		fmt.Sprintf("|  %s  |", centerPad(inner, 11)),
-		"+---------------+",
+	// Final frame: show result with label.
+	var finalFace []string
+	if result.IsHeads {
+		finalFace = []string{
+			fmt.Sprintf("      %s%s.----.%s", Bold, Yellow, Reset),
+			fmt.Sprintf("     %s%s/ o  o \\%s", Bold, Yellow, Reset),
+			fmt.Sprintf("    %s%s|  \\__/  |%s", Bold, Yellow, Reset),
+			fmt.Sprintf("     %s%s\\      /%s", Bold, Yellow, Reset),
+			fmt.Sprintf("      %s%s'----'%s", Bold, Yellow, Reset),
+			"",
+			fmt.Sprintf("    %s%s%s%s", Bold, Green, result.Value, Reset),
+		}
+	} else {
+		finalFace = []string{
+			fmt.Sprintf("      %s%s.----.%s", Bold, Cyan, Reset),
+			fmt.Sprintf("     %s%s/  ||  \\%s", Bold, Cyan, Reset),
+			fmt.Sprintf("    %s%s|   ||   |%s", Bold, Cyan, Reset),
+			fmt.Sprintf("     %s%s\\  ||  /%s", Bold, Cyan, Reset),
+			fmt.Sprintf("      %s%s'----'%s", Bold, Cyan, Reset),
+			"",
+			fmt.Sprintf("    %s%s%s%s", Bold, Red, result.Value, Reset),
+		}
 	}
 
 	frames = append(frames, Frame{
-		Content: redraw(lines, prevLines) + "\n",
-		Lines:   lines,
+		Content: redraw(finalFace, prevLines) + "\n",
+		Lines:   finalFace,
 		Delay:   0,
 	})
 
@@ -655,7 +795,353 @@ func DiceFrames(result model.DiceResult) []Frame {
 	return frames
 }
 
+// EngagementInfo holds the data needed to render the engagement footer.
+type EngagementInfo struct {
+	State      model.EngagementState
+	IsWin      bool
+	HasWinLoss bool     // true for slots (has win/loss), false for roulette/coin/dice
+	Points     int
+	NearMiss   []string
+	NextURL    string
+	DoubleURL  string
+	ShareBlock []string // compact shareable result lines
+}
+
+// EngagementFrame builds a final frame showing score, streak, history, and next-play URLs.
+// For terminals: appended after the game result as plain text.
+// For browsers: sent as a special SSE event and rendered as HTML buttons.
+func EngagementFrame(info EngagementInfo, prevLineCount int) Frame {
+	lines := engagementLines(info)
+	content := "\n"
+	for _, line := range lines {
+		content += line + "\n"
+	}
+
+	meta := map[string]string{"nextURL": info.NextURL}
+	if info.HasWinLoss && info.IsWin && info.DoubleURL != "" {
+		meta["doubleURL"] = info.DoubleURL
+	}
+
+	return Frame{
+		Content: content,
+		Lines:   lines,
+		Delay:   0,
+		Tag:     "engagement",
+		Meta:    meta,
+	}
+}
+
+func engagementLines(info EngagementInfo) []string {
+	eng := info.State
+	var lines []string
+
+	lines = append(lines, "")
+
+	// Score header.
+	header := fmt.Sprintf("  %sScore: %d%s", Bold, eng.Score, Reset)
+	if info.HasWinLoss {
+		header += "  |  "
+		if info.IsWin {
+			header += fmt.Sprintf("%sStreak: W x%d%s", Green, eng.Streak, Reset)
+		} else {
+			header += fmt.Sprintf("%sStreak: ---%s", Red, Reset)
+		}
+	}
+	if eng.Bet != model.BetLow {
+		header += fmt.Sprintf("  |  BET: %s%s%s", Yellow, eng.Bet.Label(), Reset)
+	}
+	lines = append(lines, header)
+
+	// Hot/cold streak display (only for games with win/loss).
+	if info.HasWinLoss && eng.History != "" {
+		histLine := renderHistory(eng.History)
+		lines = append(lines, histLine)
+	}
+
+	// Points earned.
+	if info.Points > 0 {
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %s%s+%d points!%s", Bold, Green, info.Points, Reset))
+	}
+
+	// Near-miss messages.
+	if !info.IsWin && len(info.NearMiss) > 0 {
+		lines = append(lines, "")
+		for _, msg := range info.NearMiss {
+			lines = append(lines, fmt.Sprintf("  %s%s!! %s !!%s", Bold, Yellow, msg, Reset))
+		}
+	}
+
+	// Share block.
+	if len(info.ShareBlock) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, info.ShareBlock...)
+	}
+
+	// Next play URLs (terminal gets curl, browser gets buttons via JS).
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("  %sGO AGAIN:%s", Bold, Reset))
+	lines = append(lines, fmt.Sprintf("  curl -N \"%s\"", info.NextURL))
+
+	if info.HasWinLoss && info.IsWin && info.DoubleURL != "" {
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %sDOUBLE OR NOTHING:%s", Bold, Reset))
+		lines = append(lines, fmt.Sprintf("  curl -N \"%s\"", info.DoubleURL))
+	}
+
+	lines = append(lines, "")
+	return lines
+}
+
+func renderHistory(history string) string {
+	var b strings.Builder
+	b.WriteString("  Recent: ")
+	for i := 0; i < len(history); i++ {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		ch := history[i]
+		if ch == 'W' {
+			b.WriteString(Green + "W" + Reset)
+		} else {
+			b.WriteString(Red + "L" + Reset)
+		}
+	}
+
+	// Detect and show streak.
+	kind, count := detectHistoryStreak(history)
+	if kind != "" {
+		if kind == "HOT" {
+			b.WriteString(fmt.Sprintf("  %s%s[HOT STREAK x%d]%s", Bold, Yellow, count, Reset))
+		} else {
+			b.WriteString(fmt.Sprintf("  %s%s[COLD STREAK x%d]%s", Bold, Cyan, count, Reset))
+		}
+	}
+
+	return b.String()
+}
+
+func detectHistoryStreak(history string) (string, int) {
+	if len(history) == 0 {
+		return "", 0
+	}
+	last := history[len(history)-1]
+	count := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i] == last {
+			count++
+		} else {
+			break
+		}
+	}
+	if count < 2 {
+		return "", 0
+	}
+	if last == 'W' {
+		return "HOT", count
+	}
+	return "COLD", count
+}
+
+// ShareBlockSlots builds a compact shareable result for slots.
+func ShareBlockSlots(result model.SlotsResult) []string {
+	if result.Mode != model.SlotsStandard {
+		return nil
+	}
+	var status string
+	if len(result.Paylines) > 0 {
+		status = fmt.Sprintf("WIN %dx %d line(s)", result.Multiplier, len(result.Paylines))
+	} else {
+		status = "no win"
+	}
+	row := ""
+	if len(result.Grid) > 0 {
+		for c, sym := range result.Grid[0] {
+			if c > 0 {
+				row += " "
+			}
+			row += sym
+		}
+	}
+	return []string{
+		"  +--- LUCK SLOTS ---+",
+		fmt.Sprintf("  | %-18s |", row),
+		fmt.Sprintf("  | %-18s |", status),
+		"  +------------------+",
+	}
+}
+
+// ShareBlockRoulette builds a compact shareable result for roulette.
+func ShareBlockRoulette(result model.RouletteResult) []string {
+	return []string{
+		"  +--- LUCK ROULETTE ---+",
+		fmt.Sprintf("  | %-20s |", result.Value+" "+result.Color.String()),
+		"  +---------------------+",
+	}
+}
+
+// ShareBlockCoinFlip builds a compact shareable result for coin flip.
+func ShareBlockCoinFlip(result model.CoinFlipResult) []string {
+	return []string{
+		"  +--- LUCK COIN ---+",
+		fmt.Sprintf("  | %-16s |", result.Value),
+		"  +-----------------+",
+	}
+}
+
+// ShareBlockDice builds a compact shareable result for dice.
+func ShareBlockDice(result model.DiceResult) []string {
+	diceStr := ""
+	for i, d := range result.Dice {
+		if i > 0 {
+			diceStr += "+"
+		}
+		diceStr += fmt.Sprintf("%d", d)
+	}
+	return []string{
+		"  +--- LUCK DICE ---+",
+		fmt.Sprintf("  | %-16s |", fmt.Sprintf("%s = %d", diceStr, result.Sum)),
+		"  +-----------------+",
+	}
+}
+
+// SpinHeaderFrame shows a header for multi-spin mode.
+func SpinHeaderFrame(current, total, runningScore int) Frame {
+	lines := []string{
+		"",
+		fmt.Sprintf("  %s%s--- SPIN %d/%d --- (Score: %d) ---%s", Bold, Cyan, current, total, runningScore, Reset),
+		"",
+	}
+	return Frame{
+		Content: "\n" + lines[0] + "\n" + lines[1] + "\n" + lines[2] + "\n",
+		Lines:   lines,
+		Delay:   500 * time.Millisecond,
+	}
+}
+
+// CashOutFrames renders a celebration for cashing out winnings.
+func CashOutFrames(amount int, eng model.EngagementState, gameURLs map[string]string) []Frame {
+	var frames []Frame
+
+	// Jackpot-style celebration.
+	colors := []string{Green, Yellow, Cyan}
+	for i := 0; i < 3; i++ {
+		c := colors[i%len(colors)]
+		art := []string{
+			"",
+			fmt.Sprintf("  %s%s *  *  *  *  *  *  *  *  *  *  * %s", Bold, c, Reset),
+			fmt.Sprintf("  %s%s*                                 *%s", Bold, c, Reset),
+			fmt.Sprintf("  %s%s    C A S H E D   O U T !         %s", Bold, c, Reset),
+			fmt.Sprintf("  %s%s*                                 *%s", Bold, c, Reset),
+			fmt.Sprintf("  %s%s *  *  *  *  *  *  *  *  *  *  * %s", Bold, c, Reset),
+			"",
+		}
+		prevLines := 0
+		if i > 0 {
+			prevLines = 7
+		}
+		frames = append(frames, Frame{
+			Content: redraw(art, prevLines),
+			Lines:   art,
+			Delay:   300 * time.Millisecond,
+		})
+	}
+
+	// Final frame with amount and game links.
+	var lines []string
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("  %s%s+====================================+%s", Bold, Green, Reset))
+	lines = append(lines, fmt.Sprintf("  %s%s|                                    |%s", Bold, Green, Reset))
+	lines = append(lines, fmt.Sprintf("  %s%s|    YOU CASHED OUT: %-8d pts    |%s", Bold, Green, amount, Reset))
+	lines = append(lines, fmt.Sprintf("  %s%s|    Total Score:   %-8d pts    |%s", Bold, Green, eng.Score, Reset))
+	lines = append(lines, fmt.Sprintf("  %s%s|                                    |%s", Bold, Green, Reset))
+	lines = append(lines, fmt.Sprintf("  %s%s+====================================+%s", Bold, Green, Reset))
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("  %sPlay again:%s", Bold, Reset))
+
+	for name, url := range gameURLs {
+		lines = append(lines, fmt.Sprintf("    %s: curl -N \"%s\"", name, url))
+	}
+	lines = append(lines, "")
+
+	// Pick first game URL for the web button.
+	meta := make(map[string]string)
+	for _, url := range gameURLs {
+		meta["nextURL"] = url
+		break
+	}
+
+	frames = append(frames, Frame{
+		Content: redraw(lines, 7),
+		Lines:   lines,
+		Delay:   0,
+		Tag:     "engagement",
+		Meta:    meta,
+	})
+
+	return frames
+}
+
+// DoubleOrNothingFrame renders the double-or-nothing result and next options.
+func DoubleOrNothingFrame(won bool, stake, newStake int, primaryURL, doubleURL string, gameURLs map[string]string, prevLineCount int) Frame {
+	var lines []string
+
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("  %s%sDOUBLE OR NOTHING%s", Bold, Cyan, Reset))
+	lines = append(lines, "")
+
+	if won {
+		lines = append(lines, fmt.Sprintf("  %s%sYOU WON! Stake doubled: %d -> %d%s", Bold, Green, stake, newStake, Reset))
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %sCASH OUT:%s (keep your %d points)", Bold, Reset, newStake))
+		lines = append(lines, fmt.Sprintf("  curl -N \"%s\"", primaryURL))
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %sDOUBLE AGAIN:%s (risk %d for %d)", Bold, Reset, newStake, newStake*2))
+		lines = append(lines, fmt.Sprintf("  curl -N \"%s\"", doubleURL))
+	} else {
+		lines = append(lines, fmt.Sprintf("  %s%sYOU LOST! %d points gone.%s", Bold, Red, stake, Reset))
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %sTRY AGAIN:%s", Bold, Reset))
+		lines = append(lines, fmt.Sprintf("  curl -N \"%s\"", primaryURL))
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %sOTHER GAMES:%s", Bold, Reset))
+		for name, url := range gameURLs {
+			lines = append(lines, fmt.Sprintf("    %s: curl -N \"%s\"", name, url))
+		}
+	}
+
+	lines = append(lines, "")
+
+	content := "\n"
+	for _, line := range lines {
+		content += line + "\n"
+	}
+
+	meta := make(map[string]string)
+	if won {
+		meta["cashOutURL"] = primaryURL
+		meta["doubleURL"] = doubleURL
+	} else {
+		meta["nextURL"] = primaryURL
+	}
+
+	return Frame{
+		Content: content,
+		Lines:   lines,
+		Delay:   0,
+		Tag:     "engagement",
+		Meta:    meta,
+	}
+}
+
 func buildDiceLines(dice []int, sides, sum int) []string {
+	if sides == 6 {
+		return buildD6Lines(dice, sum)
+	}
+	return buildNumericDiceLines(dice, sides, sum)
+}
+
+func buildNumericDiceLines(dice []int, sides, sum int) []string {
 	diceWidth := 7
 
 	border := buildGridBorder(len(dice), diceWidth)
@@ -671,6 +1157,86 @@ func buildDiceLines(dice []int, sides, sum int) []string {
 	lines := []string{border, vals.String(), border}
 
 	diceLabel := fmt.Sprintf("%dd%d", len(dice), sides)
+	if sum > 0 {
+		lines = append(lines, fmt.Sprintf("  %s%s = %d%s", Bold+Green, diceLabel, sum, Reset))
+	} else {
+		lines = append(lines, "  ...")
+	}
+
+	return lines
+}
+
+// d6Faces returns ASCII art for each d6 face value (1-6).
+var d6Faces = map[int][]string{
+	1: {
+		"+-------+",
+		"|       |",
+		"|   o   |",
+		"|       |",
+		"+-------+",
+	},
+	2: {
+		"+-------+",
+		"| o     |",
+		"|       |",
+		"|     o |",
+		"+-------+",
+	},
+	3: {
+		"+-------+",
+		"| o     |",
+		"|   o   |",
+		"|     o |",
+		"+-------+",
+	},
+	4: {
+		"+-------+",
+		"| o   o |",
+		"|       |",
+		"| o   o |",
+		"+-------+",
+	},
+	5: {
+		"+-------+",
+		"| o   o |",
+		"|   o   |",
+		"| o   o |",
+		"+-------+",
+	},
+	6: {
+		"+-------+",
+		"| o   o |",
+		"| o   o |",
+		"| o   o |",
+		"+-------+",
+	},
+}
+
+func buildD6Lines(dice []int, sum int) []string {
+	if len(dice) == 0 {
+		return nil
+	}
+
+	// Build side-by-side dice faces.
+	faceHeight := 5
+	rows := make([]string, faceHeight)
+	for d, val := range dice {
+		face, ok := d6Faces[val]
+		if !ok {
+			face = d6Faces[1]
+		}
+		for r := 0; r < faceHeight; r++ {
+			sep := ""
+			if d > 0 {
+				sep = "  "
+			}
+			rows[r] += sep + face[r]
+		}
+	}
+
+	lines := rows
+
+	diceLabel := fmt.Sprintf("%dd6", len(dice))
 	if sum > 0 {
 		lines = append(lines, fmt.Sprintf("  %s%s = %d%s", Bold+Green, diceLabel, sum, Reset))
 	} else {

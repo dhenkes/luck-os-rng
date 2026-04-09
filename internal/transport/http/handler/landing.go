@@ -13,10 +13,7 @@ func NewLandingHandler() *LandingHandler {
 }
 
 func (h *LandingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
-	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
-		host = fwd
-	}
+	host := getHost()
 
 	if strings.Contains(r.Header.Get("Accept"), "text/html") {
 		h.serveHTML(w, host)
@@ -27,7 +24,7 @@ func (h *LandingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *LandingHandler) serveText(w http.ResponseWriter, host string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprintf(w, landingText, host, host, host, host, host, host, host, host, host, host, host)
+	fmt.Fprintf(w, landingText, host, host, host, host, host, host, host, host, host, host, host, host)
 }
 
 func (h *LandingHandler) serveHTML(w http.ResponseWriter, host string) {
@@ -62,6 +59,14 @@ const landingText = `
     curl -N %s/dice
     curl -N "%s/dice?count=2&sides=6"
 
+  DOUBLE OR NOTHING
+    curl -N "%s/double?stake=100"
+
+  ENGAGEMENT
+    Add ?bet=medium|high|max for risk/reward multipliers.
+    Add ?fast=1 for faster animations.
+    Score, streak, and history are carried in the URL.
+
 `
 
 const landingHTML = `<html>
@@ -88,7 +93,8 @@ const landingHTML = `<html>
   <a href="/roulette">Roulette</a> |
   <a href="/slots">Slots</a> |
   <a href="/coinflip">Coin Flip</a> |
-  <a href="/dice">Dice</a>
+  <a href="/dice">Dice</a> |
+  <a href="/double">Double</a>
 </p>
 <hr>
 </center>
@@ -99,6 +105,17 @@ const landingHTML = `<html>
   <li><a href="/slots">Slots</a> &mdash; Pull the lever. Classic reels with paylines and cascading wins, or use as a multi-column randomizer.</li>
   <li><a href="/coinflip">Coin Flip</a> &mdash; Heads or tails. Custom labels supported.</li>
   <li><a href="/dice">Dice</a> &mdash; Roll any combination: d4, d6, d8, d10, d12, d20.</li>
+  <li><a href="/double">Double or Nothing</a> &mdash; Risk your winnings on a coin flip.</li>
+</ul>
+
+<h2>Engagement</h2>
+<p>Score, streak, and win history are carried in the URL -- no accounts, no database.</p>
+<ul>
+  <li><b>Bet tiers:</b> Add <tt>?bet=medium|high|max</tt> for risk/reward multipliers (3x, 10x, 100x).</li>
+  <li><b>Streaks:</b> Build win streaks and climb the score leaderboard (of one).</li>
+  <li><b>Double or Nothing:</b> After any win, gamble your points on a coin flip.</li>
+  <li><b>Near-miss:</b> Watch for "SO CLOSE!" messages when you almost hit big.</li>
+  <li><b>Speed:</b> Add <tt>?fast=1</tt> for faster animations.</li>
 </ul>
 
 <h2>curl commands</h2>
@@ -124,7 +141,12 @@ document.getElementById('cmds').innerHTML =
   '  <b>Dice</b>\n' +
   '    curl -N ' + h + '/dice\n' +
   '    curl -N "' + h + '/dice?count=2&sides=6"\n' +
-  '    curl -N "' + h + '/dice?count=1&sides=20"';
+  '    curl -N "' + h + '/dice?count=1&sides=20"\n\n' +
+  '  <b>Double or Nothing</b>\n' +
+  '    curl -N "' + h + '/double?stake=100"\n\n' +
+  '  <b>Bet Tiers</b>\n' +
+  '    curl -N "' + h + '/slots?bet=high"\n' +
+  '    curl -N "' + h + '/roulette?bet=max"';
 </script>
 </body>
 </html>`

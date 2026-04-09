@@ -30,13 +30,73 @@ func (h *SlotsHandler) spin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	eng := parseEngagementState(r)
+	cfg.Bet = eng.Bet
+
 	if err := cfg.Validate(); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	result := game.SpinSlots(cfg)
-	frames := renderer.SlotsFrames(result, cfg)
+	spins := cfg.Spins
+	if spins < 1 {
+		spins = 1
+	}
+	if spins > 10 {
+		spins = 10
+	}
+
+	var frames []renderer.Frame
+	var lastResult model.SlotsResult
+	totalPoints := 0
+	currentEng := eng
+
+	for spin := range spins {
+		result := game.SpinSlots(cfg)
+		lastResult = result
+		points, isWin := game.ScoreSlots(result, eng.Bet)
+		totalPoints += points
+		currentEng = game.UpdateEngagement(currentEng, isWin, points)
+
+		spinFrames := renderer.SlotsFrames(result, cfg)
+
+		if spins > 1 {
+			header := renderer.SpinHeaderFrame(spin+1, spins, totalPoints)
+			frames = append(frames, header)
+		}
+
+		frames = append(frames, spinFrames...)
+	}
+
+	_, lastIsWin := game.ScoreSlots(lastResult, eng.Bet)
+	nearMiss := game.DetectSlotsNearMiss(lastResult, cfg)
+
+	// Jackpot celebration animation (before engagement footer).
+	jackpot := game.DetermineJackpotTier(lastResult, eng.Bet)
+	if jackpot > model.JackpotNone {
+		frames = append(frames, renderer.JackpotFrames(jackpot)...)
+	}
+
+	host := getHost()
+	gameQS := gameQueryString(r)
+	nextURL := buildNextURL(host, "/slots", gameQS, currentEng)
+	doubleURL := buildDoubleURL(host, totalPoints, currentEng)
+
+	prevLines := 0
+	if len(frames) > 0 {
+		prevLines = len(frames[len(frames)-1].Lines)
+	}
+	frames = append(frames, renderer.EngagementFrame(renderer.EngagementInfo{
+		State:      currentEng,
+		IsWin:      lastIsWin,
+		HasWinLoss: true,
+		Points:     totalPoints,
+		NearMiss:   nearMiss,
+		NextURL:    nextURL,
+		DoubleURL:  doubleURL,
+		ShareBlock: renderer.ShareBlockSlots(lastResult),
+	}, prevLines))
+
 	streamOrPage(w, r, "Slots", "/slots", slotsForm, frames)
 }
 
@@ -67,6 +127,14 @@ func parseSlotsConfig(r *http.Request) (model.SlotsConfig, error) {
 	}
 
 	cfg.Luck = model.ParseSlotsLuck(q.Get("luck"))
+
+	if v := q.Get("spins"); v != "" {
+		spins, err := strconv.Atoi(v)
+		if err != nil {
+			return cfg, model.NewInvalidArgument("spins must be an integer")
+		}
+		cfg.Spins = spins
+	}
 
 	switch mode {
 	case model.SlotsMinMax:
@@ -131,6 +199,15 @@ const slotsForm = `
       <option value="insane">Insane (guaranteed cascades)</option>
     </select>
   </div>
+  <div class="field"><b>Bet:</b>
+    <select name="bet" data-default="low">
+      <option value="low">Low (1x)</option>
+      <option value="medium">Medium (3x)</option>
+      <option value="high">High (10x)</option>
+      <option value="max">Max (100x)</option>
+    </select>
+  </div>
+  <div class="field"><b>Spins:</b> <input name="spins" type="number" value="1" data-default="1" min="1" max="10"></div>
   <div class="field"><b>Min:</b> <input name="min" type="number" value="" data-default="" placeholder="for minmax"></div>
   <div class="field"><b>Max:</b> <input name="max" type="number" value="" data-default="" placeholder="for minmax"></div>
   <div class="field"><b>Op:</b>

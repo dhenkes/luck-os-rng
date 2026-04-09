@@ -66,7 +66,7 @@ func ansiToHTML(s string) string {
 }
 
 // StreamFrames writes ANSI frames to the response with chunked encoding (for terminals).
-func StreamFrames(w http.ResponseWriter, frames []Frame) {
+func StreamFrames(w http.ResponseWriter, frames []Frame, fast, instant bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		io.WriteString(w, frames[len(frames)-1].Content)
@@ -82,14 +82,18 @@ func StreamFrames(w http.ResponseWriter, frames []Frame) {
 	for _, frame := range frames {
 		io.WriteString(w, frame.Content)
 		flusher.Flush()
-		if frame.Delay > 0 {
-			time.Sleep(frame.Delay)
+		if !instant && frame.Delay > 0 {
+			d := frame.Delay
+			if fast {
+				d /= 2
+			}
+			time.Sleep(d)
 		}
 	}
 }
 
 // StreamSSE writes frames as Server-Sent Events with HTML color markup (for browsers).
-func StreamSSE(w http.ResponseWriter, frames []Frame) {
+func StreamSSE(w http.ResponseWriter, frames []Frame, fast, instant bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return
@@ -102,6 +106,45 @@ func StreamSSE(w http.ResponseWriter, frames []Frame) {
 	w.WriteHeader(http.StatusOK)
 
 	for _, frame := range frames {
+		if frame.Tag == "engagement" {
+			io.WriteString(w, "event: engagement\n")
+			for _, line := range frame.Lines {
+				colored := ansiToHTML(line)
+				fmt.Fprintf(w, "data: %s\n", colored)
+			}
+			io.WriteString(w, "\n")
+			flusher.Flush()
+
+			if len(frame.Meta) > 0 {
+				io.WriteString(w, "event: actions\n")
+				for k, v := range frame.Meta {
+					fmt.Fprintf(w, "data: %s=%s\n", k, v)
+				}
+				io.WriteString(w, "\n")
+				flusher.Flush()
+			}
+			continue
+		}
+
+		if frame.Tag == "jackpot" {
+			io.WriteString(w, "event: jackpot\n")
+			for _, line := range frame.Lines {
+				colored := ansiToHTML(line)
+				fmt.Fprintf(w, "data: %s\n", colored)
+			}
+			io.WriteString(w, "\n")
+			flusher.Flush()
+
+			if !instant && frame.Delay > 0 {
+				d := frame.Delay
+				if fast {
+					d /= 2
+				}
+				time.Sleep(d)
+			}
+			continue
+		}
+
 		for _, line := range frame.Lines {
 			colored := ansiToHTML(line)
 			fmt.Fprintf(w, "data: %s\n", colored)
@@ -109,8 +152,12 @@ func StreamSSE(w http.ResponseWriter, frames []Frame) {
 		io.WriteString(w, "\n")
 		flusher.Flush()
 
-		if frame.Delay > 0 {
-			time.Sleep(frame.Delay)
+		if !instant && frame.Delay > 0 {
+			d := frame.Delay
+			if fast {
+				d /= 2
+			}
+			time.Sleep(d)
 		}
 	}
 
@@ -156,7 +203,8 @@ const browserHTML = `<html>
   <a href="/roulette">Roulette</a> |
   <a href="/slots">Slots</a> |
   <a href="/coinflip">Coin Flip</a> |
-  <a href="/dice">Dice</a>
+  <a href="/dice">Dice</a> |
+  <a href="/double">Double</a>
 </p>
 <hr>
 </center>
@@ -165,6 +213,8 @@ const browserHTML = `<html>
   <input type="button" value="Go!" id="go" onclick="run()">
 </p>
 <pre id="out">Press Go! to play.</pre>
+<div id="jp"></div>
+<div id="eng"></div>
 <hr>
 <p><b>curl command:</b></p>
 <div id="curl-wrap">
@@ -174,7 +224,19 @@ const browserHTML = `<html>
 <p><font size="2"><i>LUCK Unleashes Chaotic Kindness</i></font></p>
 <script>
 var basePath = '%s';
-function getQS() {
+function prefillForm() {
+  var form = document.getElementById('cfg');
+  if (!form) return;
+  var params = new URLSearchParams(location.search);
+  var inputs = form.querySelectorAll('input,select');
+  for (var i = 0; i < inputs.length; i++) {
+    var el = inputs[i];
+    if (el.name && params.has(el.name)) {
+      el.value = params.get(el.name);
+    }
+  }
+}
+function getFormQS() {
   var form = document.getElementById('cfg');
   if (!form) return '';
   var params = [];
@@ -187,8 +249,29 @@ function getQS() {
   }
   return params.length ? '?' + params.join('&') : '';
 }
+function buildSSEUrl() {
+  var params = new URLSearchParams();
+  var urlParams = new URLSearchParams(location.search);
+  ['s','sc','h','u','cashout'].forEach(function(k) {
+    if (urlParams.has(k)) params.set(k, urlParams.get(k));
+  });
+  var form = document.getElementById('cfg');
+  if (form) {
+    var inputs = form.querySelectorAll('input,select');
+    for (var i = 0; i < inputs.length; i++) {
+      var el = inputs[i];
+      if (el.name && el.value && el.value !== el.getAttribute('data-default')) {
+        params.set(el.name, el.value);
+      } else if (el.name) {
+        params.delete(el.name);
+      }
+    }
+  }
+  params.set('sse', '1');
+  return basePath + '?' + params.toString();
+}
 function updateCurl() {
-  var qs = getQS();
+  var qs = getFormQS();
   var url = location.host + basePath + qs;
   if (qs) {
     document.getElementById('curl').textContent = 'curl -N "' + url + '"';
@@ -198,19 +281,68 @@ function updateCurl() {
 }
 function copyCmd() {
   var t = document.getElementById('curl').textContent;
-  if (navigator.clipboard) navigator.clipboard.writeText(t);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t);
+  } else {
+    var ta = document.createElement('textarea');
+    ta.value = t;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+}
+function toPath(url) {
+  var i = url.indexOf('/');
+  return i >= 0 ? url.substring(i) : '/' + url;
 }
 function run() {
   var btn = document.getElementById('go');
   btn.disabled = true;
   var out = document.getElementById('out');
+  var eng = document.getElementById('eng');
+  var jp = document.getElementById('jp');
   out.innerHTML = '';
-  var qs = getQS();
-  var sep = qs ? '&' : '?';
-  var src = new EventSource(basePath + qs + sep + 'sse=1');
+  eng.innerHTML = '';
+  jp.innerHTML = '';
+  var src = new EventSource(buildSSEUrl());
   src.onmessage = function(e) {
     out.innerHTML = e.data;
   };
+  src.addEventListener('jackpot', function(e) {
+    jp.innerHTML = '<pre>' + e.data + '</pre>';
+  });
+  src.addEventListener('engagement', function(e) {
+    eng.innerHTML = '<pre>' + e.data + '</pre>';
+  });
+  src.addEventListener('actions', function(e) {
+    var lines = e.data.split('\n');
+    var urls = {};
+    for (var j = 0; j < lines.length; j++) {
+      var eq = lines[j].indexOf('=');
+      if (eq > 0) urls[lines[j].substring(0, eq)] = lines[j].substring(eq + 1);
+    }
+    var p = document.createElement('p');
+    if (urls.nextURL) {
+      var again = document.createElement('input');
+      again.type = 'button'; again.value = 'Go Again!';
+      again.onclick = function() { location.href = toPath(urls.nextURL); };
+      p.appendChild(again); p.appendChild(document.createTextNode(' '));
+    }
+    if (urls.doubleURL) {
+      var db = document.createElement('input');
+      db.type = 'button'; db.value = 'Double or Nothing!';
+      db.onclick = function() { location.href = toPath(urls.doubleURL); };
+      p.appendChild(db); p.appendChild(document.createTextNode(' '));
+    }
+    if (urls.cashOutURL) {
+      var co = document.createElement('input');
+      co.type = 'button'; co.value = 'Cash Out!';
+      co.onclick = function() { location.href = toPath(urls.cashOutURL); };
+      p.appendChild(co);
+    }
+    eng.appendChild(p);
+  });
   src.addEventListener('done', function() {
     src.close();
     btn.disabled = false;
@@ -220,8 +352,8 @@ function run() {
     btn.disabled = false;
   };
 }
-// Attach change listeners to update curl command.
 document.addEventListener('DOMContentLoaded', function() {
+  prefillForm();
   var form = document.getElementById('cfg');
   if (form) {
     var inputs = form.querySelectorAll('input,select');
@@ -231,8 +363,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
   updateCurl();
+  run();
 });
-run();
 </script>
 </body>
 </html>`

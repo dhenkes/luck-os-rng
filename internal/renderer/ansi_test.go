@@ -35,6 +35,17 @@ func TestRouletteFrameCount(t *testing.T) {
 	}
 }
 
+func TestRouletteMinMaxFrameCount(t *testing.T) {
+	cfg := model.RouletteConfig{Mode: model.RouletteMinMax, Min: 1, Max: 100}
+	result := model.RouletteResult{Value: "42", Number: 42, Mode: model.RouletteMinMax, Config: cfg}
+	frames := RouletteFrames(result, cfg)
+
+	// 28 animation + 1 final = 29
+	if len(frames) != 29 {
+		t.Fatalf("minmax frame count = %d, want 29", len(frames))
+	}
+}
+
 func TestCoinFlipFrameCount(t *testing.T) {
 	cfg := model.CoinFlipConfig{Heads: "Heads", Tails: "Tails"}
 	result := model.CoinFlipResult{Value: "Heads", IsHeads: true, Config: cfg}
@@ -108,6 +119,26 @@ func TestCenterPad(t *testing.T) {
 	}
 	if got != "  AB  " {
 		t.Fatalf("centerPad(\"AB\", 6) = %q, want %q", got, "  AB  ")
+	}
+}
+
+func TestWheelStripAlignment(t *testing.T) {
+	cfg := model.RouletteConfig{Mode: model.RouletteStandard}
+	result := model.RouletteResult{Value: "17", Number: 17, Color: model.RouletteRed, Mode: model.RouletteStandard}
+	frames := RouletteFrames(result, cfg)
+	last := frames[len(frames)-1]
+
+	// The box border is 17 chars wide. All lines with content should match.
+	boxWidth := displayWidth("+---------------+")
+	for i, line := range last.Lines {
+		dw := displayWidth(line)
+		// Skip pointer lines (vv/^^) — they are shorter by design.
+		if dw < boxWidth {
+			continue
+		}
+		if dw != boxWidth {
+			t.Errorf("line[%d] display width = %d, want %d: %q", i, dw, boxWidth, line)
+		}
 	}
 }
 
